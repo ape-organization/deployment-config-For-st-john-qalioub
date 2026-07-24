@@ -1,0 +1,188 @@
+name: Deploy Services
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'dev/*.yml'
+      - 'preprod/*.yml'
+      - 'prod/*.yml'
+
+jobs:
+  deploy:
+    runs-on: self-hosted
+
+    steps:
+      - name: Checkout Config Repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install yq
+        run: |
+          mkdir -p $HOME/bin
+          wget -qO $HOME/bin/yq https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64
+          chmod +x $HOME/bin/yq
+          echo "$HOME/bin" >> $GITHUB_PATH
+
+      - name: Detect Changed Files
+        id: changes
+        run: |
+          FILES=$(git diff --name-only ${{ github.event.before }} ${{ github.sha }})
+
+          if [ -z "$FILES" ]; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "files<<EOF" >> $GITHUB_OUTPUT
+          echo "$FILES" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Deploy Services
+        if: steps.changes.outputs.skip != 'true'
+        env:
+          DEV_DATABASE_USERNAME: ${{ vars.DEV_DATABASE_USERNAME }}
+          PREPROD_DATABASE_USERNAME: ${{ vars.PREPROD_DATABASE_USERNAME }}
+          PROD_DATABASE_USERNAME: ${{ vars.PROD_DATABASE_USERNAME }}
+
+          DEV_DATABASE_PASSWORD: ${{ secrets.DEV_DATABASE_PASSWORD }}
+          PREPROD_DATABASE_PASSWORD: ${{ secrets.PREPROD_DATABASE_PASSWORD }}
+          PROD_DATABASE_PASSWORD: ${{ secrets.PROD_DATABASE_PASSWORD }}
+
+          DATABASE_HOST: ${{ secrets.DATABASE_HOST }}
+
+        run: |
+          set -e
+
+          while IFS= read -r FILE; do
+            [ -z "$FILE" ] && continue
+
+            echo "=========================="
+            echo "Deploying $FILE"
+            echo "=========================="
+
+            ENV=$(echo "$FILE" | cut -d'/' -f1)
+            SERVICE=$(basename $FILE .yml)
+
+            TAG=$(yq e '.tag' $FILE)
+            REPO=$(yq e '.repo' $FILE)
+            TYPE=$(yq e '.type' $FILE)
+            APP_PORT=$(yq e '.port' $FILE)
+            
+            BASE="/home/Center-management/$ENV/$SERVICE"
+            RELEASE="$BASE/releases/$TAG"
+            WORKSPACE="/tmp/build/$SERVICE-$TAG"
+
+            mkdir -p "$RELEASE"
+            rm -rf "$WORKSPACE"
+            git config --list | grep credential || true
+            echo "Downloading repo: $REPO"
+            git clone https://github.com/${REPO}.git "$WORKSPACE"
+            cd "$WORKSPACE"
+            git checkout "$TAG"
+
+            # =========================
+            # DB VARIABLES
+            # =========================
+            if [ "$ENV" = "dev" ]; then
+              DB_NAME="$DEV_DATABASE_USERNAME"
+              DB_USER="$DEV_DATABASE_USERNAME"
+              DB_PASS="$DEV_DATABASE_PASSWORD"
+              DB_HOST="$DATABASE_HOST"
+
+            elif [ "$ENV" = "preprod" ]; then
+              DB_NAME="$PREPROD_DATABASE_USERNAME"
+              DB_USER="$PREPROD_DATABASE_USERNAME"
+              DB_PASS="$PREPROD_DATABASE_PASSWORD"
+              DB_HOST="$DATABASE_HOST"
+
+            else
+              DB_NAME="$PROD_DATABASE_USERNAME"
+              DB_USER="$PROD_DATABASE_USERNAME"
+              DB_PASS="$PROD_DATABASE_PASSWORD"
+              DB_HOST="$DATABASE_HOST"
+            fi
+
+            echo "Deploying $SERVICE in $ENV"
+
+            case "$TYPE" in
+
+              java)
+                mvn -B clean package -DskipTests
+
+                docker build -t $SERVICE:$TAG .
+
+                CONTAINER_NAME="${ENV}-${SERVICE}"
+
+                docker rm -f $CONTAINER_NAME 2>/dev/null || true
+
+                # ✅ IMPORTANT: no port mapping here
+                
+               
+
+                docker run -d \
+                  --name $CONTAINER_NAME \
+                  -p $APP_PORT:8080 \
+                  --network center-network \
+                  -e SPRING_PROFILES_ACTIVE=$ENV \
+                  -e SPRING_DATASOURCE_URL="jdbc:sqlserver://$DB_HOST:1433;databaseName=$DB_NAME;encrypt=true;trustServerCertificate=true" \
+                  -e SPRING_DATASOURCE_USERNAME="$DB_USER" \
+                  -e SPRING_DATASOURCE_PASSWORD="$DB_PASS" \
+                  $SERVICE:$TAG
+                ;;
+
+              node)
+                npm ci
+                npm run build || true
+                rsync -a . "$RELEASE"
+                ;;
+
+              python)
+                pip install -r requirements.txt || true
+                rsync -a . "$RELEASE"
+                ;;
+
+              angular)
+                npm install
+                npm run build -- --configuration production
+              
+                IMAGE_NAME=$(echo "$SERVICE" | tr '[:upper:]' '[:lower:]')
+                CONTAINER_NAME="${ENV}-${IMAGE_NAME}"
+              
+                docker build -t ${IMAGE_NAME}:${TAG} .
+              
+                docker rm -f $CONTAINER_NAME 2>/dev/null || true
+              
+                docker run -d \
+                  --name $CONTAINER_NAME \
+                  --network center-network \
+                  -p ${APP_PORT}:3000 \
+                  ${IMAGE_NAME}:${TAG}
+                ;;
+
+              docker)
+                docker build -t $SERVICE:$TAG .
+
+                CONTAINER_NAME="${ENV}-${SERVICE}"
+
+                docker rm -f $CONTAINER_NAME 2>/dev/null || true
+                
+
+                # ✅ no ports here
+                
+                docker run -d \
+                  --name $CONTAINER_NAME \
+                  --network center-network \
+                  -e DATABASE_HOST=$DB_HOST \
+                  -e DATABASE_NAME=$DB_NAME \
+                  -e DATABASE_USERNAME=$DB_USER \
+                  -e DATABASE_PASSWORD=$DB_PASS \
+                  $SERVICE:$TAG
+                ;;
+
+            esac
+
+            echo "SUCCESS: $SERVICE deployed"
+
+          done <<< "${{ steps.changes.outputs.files }}"
