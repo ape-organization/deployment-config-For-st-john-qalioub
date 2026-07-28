@@ -51,6 +51,8 @@ jobs:
           PROD_DATABASE_PASSWORD: ${{ secrets.PROD_DATABASE_PASSWORD }}
 
           DATABASE_HOST: ${{ secrets.DATABASE_HOST }}
+          SMSTOKEN: ${{secrets.SMSTOKEN}}
+          ORIGINS: ${{secrets.ORIGINS}}
 
         run: |
           set -e
@@ -90,18 +92,23 @@ jobs:
               DB_USER="$DEV_DATABASE_USERNAME"
               DB_PASS="$DEV_DATABASE_PASSWORD"
               DB_HOST="$DATABASE_HOST"
+              SMSTOKEN="$SMSTOKEN"
+              ORIGINS="$ORIGINS"
 
             elif [ "$ENV" = "preprod" ]; then
               DB_NAME="$PREPROD_DATABASE_USERNAME"
               DB_USER="$PREPROD_DATABASE_USERNAME"
               DB_PASS="$PREPROD_DATABASE_PASSWORD"
               DB_HOST="$DATABASE_HOST"
-
+              SMSTOKEN="$SMSTOKEN"
+              ORIGINS="$ORIGINS"
             else
               DB_NAME="$PROD_DATABASE_USERNAME"
               DB_USER="$PROD_DATABASE_USERNAME"
               DB_PASS="$PROD_DATABASE_PASSWORD"
               DB_HOST="$DATABASE_HOST"
+              SMSTOKEN="$SMSTOKEN"
+              ORIGINS="$ORIGINS"
             fi
 
             echo "Deploying $SERVICE in $ENV"
@@ -129,6 +136,8 @@ jobs:
                   -e SPRING_DATASOURCE_URL="jdbc:sqlserver://$DB_HOST:1433;databaseName=$DB_NAME;encrypt=true;trustServerCertificate=true" \
                   -e SPRING_DATASOURCE_USERNAME="$DB_USER" \
                   -e SPRING_DATASOURCE_PASSWORD="$DB_PASS" \
+                  -e app.sms.bearer-token="$SMSTOKEN" \
+                  -e app.cors.allowed-origins="$ORIGINS" \
                   $SERVICE:$TAG
                 ;;
 
