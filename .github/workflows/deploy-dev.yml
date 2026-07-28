@@ -53,6 +53,7 @@ jobs:
           DATABASE_HOST: ${{ secrets.DATABASE_HOST }}
           SMSTOKEN: ${{secrets.SMSTOKEN}}
           ORIGINS: ${{secrets.ORIGINS}}
+          ORIGINS_Dev: ${{secrets.ORIGINS_Dev}}
 
         run: |
           set -e
@@ -93,7 +94,7 @@ jobs:
               DB_PASS="$DEV_DATABASE_PASSWORD"
               DB_HOST="$DATABASE_HOST"
               SMSTOKEN="$SMSTOKEN"
-              ORIGINS="$ORIGINS"
+              ORIGINS="$ORIGINS_Dev"
 
             elif [ "$ENV" = "preprod" ]; then
               DB_NAME="$PREPROD_DATABASE_USERNAME"
